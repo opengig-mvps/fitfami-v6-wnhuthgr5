@@ -1,0 +1,87 @@
+name: Deploy site
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  DEPLOYING-WEBSITE:
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, 'DEPLOY') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set Deployment Status to In Progress
+        run: |
+          curl -X PATCH "https://tools-backend.dev.opengig.work/deployment/${{ github.event.repository.name }}" \
+            -H "Content-Type: application/json" \
+            -d '{"status": "in_progress"}'
+      - name: Create or change env file
+        run: |
+            REPO_NAME="${{ github.event.repository.name }}"
+            APP_URL="https://${REPO_NAME}.opengig.work"
+            DATABASE_URL="postgresql://opengig:Database2024!@opengigmvp.postgres.database.azure.com:5432/${REPO_NAME}?schema=public"
+        
+            # Overwrite the .env file with new content
+            cat <<EOF > .env
+            DATABASE_URL=$DATABASE_URL
+            POSTGRES_DB=$REPO_NAME
+            POSTGRES_PASSWORD=root
+            POSTGRES_USER=root
+            JWT_SECRET=$AoJ~\`)b:*zEcVw8K];X
+            JWT_EXPIRATION=10h
+            PORT=3000
+            APP_URL=$APP_URL
+            NEXTAUTH_SECRET=98E3B2CC28F61492C6934531C828C
+            NEXTAUTH_URL=$APP_URL
+            GOOGLE_CLIENT_ID=${{ secrets.ENV_GOOGLE_CLIENT_ID }}
+            GOOGLE_CLIENT_SECRET=${{ secrets.ENV_GOOGLE_CLIENT_SECRET }}
+            SMTP_HOST=email-smtp.ap-southeast-2.amazonaws.com
+            SMTP_PORT=587
+            SMTP_USER=${{ secrets.ENV_SMTP_USER }}
+            SMTP_PASSWORD=${{ secrets.ENV_SMTP_PASSWORD }}
+            SMTP_FROM_EMAIL=mail@opengig.work
+            EOF
+          
+            echo "Generated .env file:"
+            cat .env
+
+      - name: Configure AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Get Instance Public IP
+        id: get_ip
+        run: |
+          INSTANCE_NAME="${{ github.event.repository.name }}"
+          INSTANCE_IP=$(aws lightsail get-instance --instance-name $INSTANCE_NAME --query 'instance.publicIpAddress' --output text)
+          echo "INSTANCE_IP=${INSTANCE_IP}" >> $GITHUB_ENV
+
+      - name: SSH into Lightsail Instance and Deploy
+        run: |
+          # Copy the SSH key
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEFAULT_SSH_PRIVATE_KEY }}" > ~/.ssh/github
+          chmod 400 ~/.ssh/github
+
+          echo "INSTANCE_IP: $INSTANCE_IP"
+
+          # Deploying Now..!!
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/github ubuntu@${{ env.INSTANCE_IP }} 'bash -s' < ./deploy.sh
+          curl -X PATCH "https://tools-backend.dev.opengig.work/deployment/${{ github.event.repository.name }}" \
+            -H "Content-Type: application/json" \
+            -d '{"status": "success"}'
+      - name: Set Deployment Status to Failed
+        if: failure()
+        run: |
+          curl -X PATCH "https://tools-backend.dev.opengig.work/deployment/${{ github.event.repository.name }}" \
+            -H "Content-Type: application/json" \
+            -d '{"status": "failed"}'
